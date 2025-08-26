@@ -10,3 +10,8 @@ dependencies = [
     "google-genai>=1.31.0",
     "groq>=0.31.0",
 ]
+
+[dependency-groups]
+dev = [
+    "chalice>=1.32.0",
+]

@@ -11,12 +11,14 @@ app = Chalice(app_name="helloworld")
 
 
 def notify_ios_app(message: str) -> None:
-    notify_url = "https://ntfy.sh/hurling3-zoom4-reliable7-shimmer8" # Unique subscription URL.
+    notify_url = (
+        "https://ntfy.sh/hurling3-zoom4-reliable7-shimmer8"  # Unique subscription URL.
+    )
     try:
         requests.post(notify_url, data=message)
     except Exception as notify_err:
         print(f"Failed to notify iOS app: {notify_err}")
-    
+
 
 def generate_formatted_transcription(raw_transcript: str) -> str:
     """Format raw transcription using Gemini AI"""
@@ -39,6 +41,8 @@ def generate_formatted_transcription(raw_transcript: str) -> str:
                     5. Format as clear, readable markdown with headings where appropriate
                     
                     Keep the original meaning and tone entirely.
+                    
+                    At the end of the transcription, add a summary of the main points and any action points.
 
                     Raw transcription:
                     {raw_transcript}"""
@@ -67,19 +71,24 @@ def generate_formatted_transcription(raw_transcript: str) -> str:
 def transcribe_audio(event):
     """
     Transcribe audio from S3 bucket
-    To view the logs: 
+    To view the logs:
     """
-
-    print("🎵 S3 EVENT TRIGGERED! 🎵")
-    print(f"Event: {event}")
-    print(f"Bucket: {event.bucket}")
-    print(f"Key: {event.key}")
+    notify_ios_app(f"Transcribing {event.key}")
+    
+    # Estimate the time to transcribe the audio based on the file size.
+    s3 = boto3.client("s3")
+    file_size = s3.head_object(Bucket=event.bucket, Key=event.key)["ContentLength"]
+    estimated_transription_time = file_size / 1024 / 1024 / 10  # 10MB/s
+    estimated_total_time = estimated_transription_time + 20  # 20 seconds for the LLM
+    estimated_total_time_minutes = estimated_total_time / 60
+    notify_ios_app(f"Estimated time to transcribe: {estimated_total_time_minutes} minutes")
 
     try:
         s3 = boto3.client("s3")
 
         with tempfile.NamedTemporaryFile(mode="wb", delete=False) as f:
             s3.download_file(event.bucket, event.key, f.name)
+            notify_ios_app(f"Downloaded {event.key} to {f.name}")
             print(f"✅ Downloaded {event.key} to {f.name}")
 
             groq_client = Groq()
@@ -115,8 +124,7 @@ def transcribe_audio(event):
                 ContentType="text/plain",
             )
             print(f"💾 Saved transcription to: {output_key}")
-            
-            
+
             # Notify iOS app that the transcription is ready.
             filename = event.key.split("/")[-1]
             message = f"File: {filename}. Transcription ready. Visit in s3://{event.bucket}/{output_key}"

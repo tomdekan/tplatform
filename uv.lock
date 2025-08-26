@@ -499,6 +499,11 @@ dependencies = [
     { name = "groq" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "chalice" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "boto3", specifier = ">=1.40.15" },
@@ -506,6 +511,9 @@ requires-dist = [
     { name = "google-genai", specifier = ">=1.31.0" },
     { name = "groq", specifier = ">=0.31.0" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "chalice", specifier = ">=1.32.0" }]
 
 [[package]]
 name = "six"
