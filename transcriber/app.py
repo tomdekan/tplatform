@@ -7,7 +7,7 @@ from google.genai import types
 from groq import Groq
 import requests
 
-app = Chalice(app_name="helloworld")
+app = Chalice(app_name="transcriber")
 
 
 def notify_ios_app(message: str) -> None:
