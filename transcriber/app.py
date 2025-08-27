@@ -41,9 +41,8 @@ def generate_formatted_transcription(raw_transcript: str) -> str:
                     5. Format as clear, readable markdown with headings where appropriate
                     
                     Keep the original meaning and tone entirely.
+                    Include approximate timestamps for each section of the transcription.
                     
-                    At the end of the transcription, add a summary of the main points and any action points.
-
                     Raw transcription:
                     {raw_transcript}"""
                 ),
