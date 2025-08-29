@@ -1,4 +1,5 @@
 import os
+from datetime import datetime
 import tempfile
 import boto3
 from chalice import Chalice
@@ -41,7 +42,6 @@ def generate_formatted_transcription(raw_transcript: str) -> str:
                     5. Format as clear, readable markdown with headings where appropriate
                     
                     Keep the original meaning and tone entirely.
-                    Include approximate timestamps for each section of the transcription.
                     
                     Raw transcription:
                     {raw_transcript}"""
@@ -63,6 +63,34 @@ def generate_formatted_transcription(raw_transcript: str) -> str:
         config=generate_content_config,
     )
 
+    return response.text
+
+
+def generate_title(text: str) -> str:
+    """Generate a title for the transcription"""
+    client = genai.Client(
+        api_key=os.environ.get("GEMINI_API_KEY"),
+    )
+    model = "gemini-2.5"
+    contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_text(
+                    text=f"""
+            Generate a title for the following transcription. 
+            Reply only with the title, no other text.
+            <transcription>{text}</transcription>
+            """
+                )
+            ],
+        ),
+    ]
+
+    response = client.models.generate_content(
+        model=model,
+        contents=contents,
+    )
     return response.text
 
 
@@ -109,11 +137,14 @@ def transcribe_audio(event):
             notify_ios_app(message)
 
             formatted_text = generate_formatted_transcription(transcription.text)
+            title = generate_title(formatted_text)
+            date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+            output_filename = f"{date_str}_{title}.txt"
 
             print(f"📝 Formatted transcription: {formatted_text[:50]}...")
 
-            input_key_without_prefix = event.key.replace("audio/", "")
-            output_key = f"transcriptions/{input_key_without_prefix}.txt"
+            output_key = f"transcriptions/{output_filename}"
 
             # Save formatted transcription back to S3.
             s3.put_object(
@@ -125,8 +156,7 @@ def transcribe_audio(event):
             print(f"💾 Saved transcription to: {output_key}")
 
             # Notify iOS app that the transcription is ready.
-            filename = event.key.split("/")[-1]
-            message = f"File: {filename}. Transcription ready. Visit in s3://{event.bucket}/{output_key}"
+            message = f"File: {output_filename}. Transcription ready. Visit in s3://{event.bucket}/{output_key}"
             notify_ios_app(message)
 
         print("🎉 Audio processing complete!")
