@@ -100,10 +100,10 @@ def transcribe_audio(event):
     Transcribe audio from S3 bucket
     To view the logs:
     """
+    s3 = boto3.client("s3")
     notify_ios_app(f"Transcribing {event.key}")
     
     # Estimate the time to transcribe the audio based on the file size.
-    s3 = boto3.client("s3")
     file_size = s3.head_object(Bucket=event.bucket, Key=event.key)["ContentLength"]
     estimated_transription_time = file_size / 1024 / 1024 / 10  # 10MB/s
     estimated_total_time = estimated_transription_time + 20  # 20 seconds for the LLM
@@ -155,7 +155,6 @@ def transcribe_audio(event):
             )
             print(f"💾 Saved transcription to: {output_key}")
 
-            # Notify iOS app that the transcription is ready.
             message = f"File: {output_filename}. Transcription ready. Visit in s3://{event.bucket}/{output_key}"
             notify_ios_app(message)
 
