@@ -28,6 +28,8 @@ def generate_formatted_transcription(raw_transcript: str) -> str:
     )
 
     model = "gemini-2.5-pro"
+
+    # First call: Initial formatting
     contents = [
         types.Content(
             role="user",
@@ -36,13 +38,13 @@ def generate_formatted_transcription(raw_transcript: str) -> str:
                     text=f"""You are an expert transcription editor. Clean up this audio transcription with:
 
                     1. Perfect grammar and punctuation
-                    2. Proper paragraph breaks for topic changes  
+                    2. Proper paragraph breaks for topic changes
                     3. Correct capitalization and spelling
                     4. Remove filler words (um, uh, like) but keep all meaningful content
                     5. Format as clear, readable markdown with headings where appropriate
-                    
+
                     Keep the original meaning and tone entirely.
-                    
+
                     Raw transcription:
                     {raw_transcript}"""
                 ),
@@ -63,7 +65,43 @@ def generate_formatted_transcription(raw_transcript: str) -> str:
         config=generate_content_config,
     )
 
-    return response.text
+    first_response_text = response.text
+
+    # Second call: Check for missed content
+    second_contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_text(
+                    text=f"""You've missed content. Exclude nothing.
+
+                    Original raw transcription:
+                    {raw_transcript}
+
+                    Your previous formatted version:
+                    {first_response_text}
+
+                    Please identify and return ONLY any content that was missed or excluded from the formatted version. If nothing was missed, return an empty string."""
+                ),
+            ],
+        ),
+    ]
+
+    second_response = client.models.generate_content(
+        model=model,
+        contents=second_contents,
+        config=generate_content_config,
+    )
+
+    additional_content = second_response.text.strip()
+
+    # Append additional content if any was found
+    if additional_content:
+        final_text = first_response_text + "\n\n" + additional_content
+    else:
+        final_text = first_response_text
+
+    return final_text
 
 
 def generate_title(text: str) -> str:
