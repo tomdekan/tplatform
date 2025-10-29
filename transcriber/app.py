@@ -35,7 +35,7 @@ def generate_formatted_transcription(raw_transcript: str) -> str:
             role="user",
             parts=[
                 types.Part.from_text(
-                    text=f"""You are an expert transcription editor. Clean up this audio transcription with:
+                    text=f"""Transcribe this meeting. Exclude nothing.
 
                     1. Perfect grammar and punctuation
                     2. Proper paragraph breaks for topic changes
