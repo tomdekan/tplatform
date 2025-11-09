@@ -23,8 +23,8 @@ def notify_ios_app(message: str) -> None:
         print(f"Failed to notify iOS app: {notify_err}")
 
 
-def chunk_text(text: str, max_length: int = 2000) -> list[str]:
-    """Split text into chunks that fit within Notion's character limit"""
+def chunk_text(text: str, max_length: int = 1800) -> list[str]:
+    """Split text into chunks that fit within Notion's 2000 character limit"""
     if len(text) <= max_length:
         return [text]
 
@@ -35,17 +35,17 @@ def chunk_text(text: str, max_length: int = 2000) -> list[str]:
             break
 
         split_at = text.rfind(" ", 0, max_length)
-        if split_at == -1:
+        if split_at == -1 or split_at < max_length // 2:
             split_at = max_length
 
-        chunks.append(text[:split_at])
-        text = text[split_at:].lstrip()
+        chunks.append(text[:split_at].strip())
+        text = text[split_at:].strip()
 
     return chunks
 
 
 def add_transcript_to_notion(doc_name: str, transcript_text: str) -> None:
-    """Add transcript to Notion database as a new page"""
+    """Add transcript to Notion database as a new page with all API limits enforced"""
     try:
         notion_api_key = os.environ.get("NOTION_API_KEY")
         if not notion_api_key:
@@ -55,35 +55,63 @@ def add_transcript_to_notion(doc_name: str, transcript_text: str) -> None:
         notion = Client(auth=notion_api_key)
         database_id = "25b2a405bb848084baf7c3403c6955c7"
 
+        safe_title = doc_name[:2000] if len(doc_name) > 2000 else doc_name
+        if len(doc_name) > 2000:
+            print(f"⚠️ Title truncated from {len(doc_name)} to 2000 chars")
+
         paragraphs = transcript_text.split("\n\n")
         children_blocks = []
 
         for paragraph in paragraphs:
             if paragraph.strip():
-                chunks = chunk_text(paragraph.strip(), max_length=1900)
+                chunks = chunk_text(paragraph.strip())
                 for chunk in chunks:
-                    children_blocks.append(
-                        {
-                            "object": "block",
-                            "type": "paragraph",
-                            "paragraph": {
-                                "rich_text": [
-                                    {"type": "text", "text": {"content": chunk}}
-                                ]
-                            },
-                        }
-                    )
+                    if len(chunk) <= 2000:
+                        children_blocks.append(
+                            {
+                                "object": "block",
+                                "type": "paragraph",
+                                "paragraph": {
+                                    "rich_text": [
+                                        {"type": "text", "text": {"content": chunk}}
+                                    ]
+                                },
+                            }
+                        )
+                    else:
+                        print(f"⚠️ Skipping chunk: {len(chunk)} chars")
 
-        notion.pages.create(
+        if len(children_blocks) > 1000:
+            print(
+                f"⚠️ Transcript too long ({len(children_blocks)} blocks), truncating to 1000 blocks"
+            )
+            children_blocks = children_blocks[:1000]
+
+        initial_blocks = children_blocks[:100]
+        remaining_blocks = children_blocks[100:]
+
+        page = notion.pages.create(
             parent={"database_id": database_id},
-            properties={"Doc name": {"title": [{"text": {"content": doc_name}}]}},
-            children=children_blocks,
+            properties={"Doc name": {"title": [{"text": {"content": safe_title}}]}},
+            children=initial_blocks,
         )
 
-        print(f"✅ Added transcript to Notion: {doc_name}")
+        page_id = page["id"]
+
+        for i in range(0, len(remaining_blocks), 100):
+            batch = remaining_blocks[i : i + 100]
+            try:
+                notion.blocks.children.append(block_id=page_id, children=batch)
+                print(f"📄 Batch {i // 100 + 1}: {len(batch)} blocks added")
+            except Exception as batch_err:
+                print(f"⚠️ Failed to append batch {i // 100 + 1}: {batch_err}")
+
+        print(
+            f"✅ Notion upload complete: {safe_title} ({len(children_blocks)} blocks)"
+        )
 
     except Exception as notion_err:
-        print(f"⚠️ Failed to add to Notion (continuing anyway): {notion_err}")
+        print(f"⚠️ Notion upload failed (continuing): {notion_err}")
 
 
 def generate_formatted_transcription(raw_transcript: str) -> str:
