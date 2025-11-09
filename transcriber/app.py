@@ -1,12 +1,14 @@
 import os
+import re
+import time
 from datetime import datetime
-import tempfile
+
 import boto3
+import requests
 from chalice import Chalice
 from google import genai
 from google.genai import types
-from groq import Groq
-import requests
+from notion_client import Client
 
 app = Chalice(app_name="transcriber")
 
@@ -19,6 +21,46 @@ def notify_ios_app(message: str) -> None:
         requests.post(notify_url, data=message)
     except Exception as notify_err:
         print(f"Failed to notify iOS app: {notify_err}")
+
+
+def add_transcript_to_notion(doc_name: str, transcript_text: str) -> None:
+    """Add transcript to Notion database as a new page"""
+    try:
+        notion_api_key = os.environ.get("NOTION_API_KEY")
+        if not notion_api_key:
+            print("⚠️ NOTION_API_KEY not set, skipping Notion upload")
+            return
+
+        notion = Client(auth=notion_api_key)
+        database_id = "25b2a405bb848084baf7c3403c6955c7"
+
+        paragraphs = transcript_text.split("\n\n")
+        children_blocks = []
+
+        for paragraph in paragraphs:
+            if paragraph.strip():
+                children_blocks.append(
+                    {
+                        "object": "block",
+                        "type": "paragraph",
+                        "paragraph": {
+                            "rich_text": [
+                                {"type": "text", "text": {"content": paragraph.strip()}}
+                            ]
+                        },
+                    }
+                )
+
+        notion.pages.create(
+            parent={"database_id": database_id},
+            properties={"Doc name": {"title": [{"text": {"content": doc_name}}]}},
+            children=children_blocks,
+        )
+
+        print(f"✅ Added transcript to Notion: {doc_name}")
+
+    except Exception as notion_err:
+        print(f"⚠️ Failed to add to Notion (continuing anyway): {notion_err}")
 
 
 def generate_formatted_transcription(raw_transcript: str) -> str:
@@ -66,22 +108,28 @@ def generate_formatted_transcription(raw_transcript: str) -> str:
     return response.text
 
 
-def generate_title(text: str) -> str:
+def generate_title(text: str, filename: str) -> str:
     """Generate a title for the transcription"""
     client = genai.Client(
         api_key=os.environ.get("GEMINI_API_KEY"),
     )
-    model = "gemini-2.5"
+    model = "gemini-2.5-flash"
+
+    customer_name = filename.replace("-", " ").replace("_", " ").split(".")[0]
+
     contents = [
         types.Content(
             role="user",
             parts=[
                 types.Part.from_text(
-                    text=f"""
-            Generate a title for the following transcription. 
-            Reply only with the title, no other text.
-            <transcription>{text}</transcription>
-            """
+                    text=f"""Generate a title for the following transcription.
+Include the customer/client name from the filename if identifiable.
+
+Filename: {customer_name}
+
+Reply only with the title, no other text.
+
+<transcription>{text}</transcription>"""
                 )
             ],
         ),
@@ -94,72 +142,151 @@ def generate_title(text: str) -> str:
     return response.text
 
 
+def generate_summary(text: str, filename: str) -> str:
+    """Generate a summary with key points and supporting quotes"""
+    client = genai.Client(
+        api_key=os.environ.get("GEMINI_API_KEY"),
+    )
+    model = "gemini-2.5-flash"
+
+    customer_name = filename.replace("-", " ").replace("_", " ").split(".")[0]
+
+    contents = [
+        types.Content(
+            role="user",
+            parts=[
+                types.Part.from_text(
+                    text=f"""Create a comprehensive summary of this transcription with:
+
+**Customer/Client:** {customer_name}
+
+1. Key Points - List all main topics and decisions
+2. Supporting Quotes - Include relevant direct quotes that support each point
+
+Format as clear markdown with:
+- **Customer:** {customer_name}
+- ## Key Points (bullet list)
+- ## Supporting Quotes (grouped by topic)
+
+<transcription>{text}</transcription>"""
+                )
+            ],
+        ),
+    ]
+
+    response = client.models.generate_content(
+        model=model,
+        contents=contents,
+    )
+    return response.text
+
+
+def start_transcription_job(s3_bucket: str, s3_key: str, job_name: str) -> str:
+    """Start AWS Transcribe job and return job name"""
+    transcribe = boto3.client("transcribe")
+
+    media_uri = f"s3://{s3_bucket}/{s3_key}"
+
+    file_extension = s3_key.split(".")[-1].lower() if "." in s3_key else "mp3"
+    valid_formats = ["amr", "flac", "wav", "ogg", "mp3", "mp4", "webm", "m4a"]
+    media_format = file_extension if file_extension in valid_formats else "mp3"
+
+    transcribe.start_transcription_job(
+        TranscriptionJobName=job_name,
+        Media={"MediaFileUri": media_uri},
+        MediaFormat=media_format,
+        LanguageCode="en-GB",
+        Settings={
+            "ShowSpeakerLabels": True,
+            "MaxSpeakerLabels": 10,
+        },
+    )
+
+    return job_name
+
+
+def wait_for_transcription(job_name: str, max_attempts: int = 60) -> str:
+    """Wait for transcription job to complete and return transcript text"""
+    transcribe = boto3.client("transcribe")
+
+    for attempt in range(max_attempts):
+        response = transcribe.get_transcription_job(TranscriptionJobName=job_name)
+        status = response["TranscriptionJob"]["TranscriptionJobStatus"]
+
+        if status == "COMPLETED":
+            transcript_uri = response["TranscriptionJob"]["Transcript"][
+                "TranscriptFileUri"
+            ]
+            return requests.get(transcript_uri).json()["results"]["transcripts"][0][
+                "transcript"
+            ]
+
+        if status == "FAILED":
+            reason = response["TranscriptionJob"].get("FailureReason", "Unknown")
+            raise Exception(f"Transcription failed: {reason}")
+
+        time.sleep(10)
+
+    raise Exception(f"Transcription timed out after {max_attempts * 10} seconds")
+
+
 @app.on_s3_event("audio-to-transcribe1", events=["s3:ObjectCreated:*"], prefix="audio/")
 def transcribe_audio(event):
-    """
-    Transcribe audio from S3 bucket
-    To view the logs:
-    """
+    """Transcribe audio from S3 using AWS Transcribe"""
     s3 = boto3.client("s3")
-    notify_ios_app(f"Transcribing {event.key}")
-    
-    # Estimate the time to transcribe the audio based on the file size.
-    file_size = s3.head_object(Bucket=event.bucket, Key=event.key)["ContentLength"]
-    estimated_transription_time = file_size / 1024 / 1024 / 10  # 10MB/s
-    estimated_total_time = estimated_transription_time + 20  # 20 seconds for the LLM
-    estimated_total_time_minutes = estimated_total_time / 60
-    notify_ios_app(f"Estimated time to transcribe: {estimated_total_time_minutes} minutes")
 
     try:
-        s3 = boto3.client("s3")
+        filename = event.key.split("/")[-1]
+        notify_ios_app(f"🎙️ Starting transcription: {filename}")
 
-        with tempfile.NamedTemporaryFile(mode="wb", delete=False) as f:
-            s3.download_file(event.bucket, event.key, f.name)
-            notify_ios_app(f"Downloaded {event.key} to {f.name}")
-            print(f"✅ Downloaded {event.key} to {f.name}")
+        file_size_bytes = s3.head_object(Bucket=event.bucket, Key=event.key)[
+            "ContentLength"
+        ]
+        file_size_mb = file_size_bytes / (1024 * 1024)
+        print(f"📊 File size: {file_size_mb:.2f} MB")
 
-            groq_client = Groq()
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        safe_filename = re.sub(r"[^0-9a-zA-Z._-]", "-", filename)[:50]
+        job_name = f"transcribe-{timestamp}-{safe_filename}"
 
-            # Transcribe the audio file.
-            with open(f.name, "rb") as file:
-                filename = event.key.split("/")[-1]  # Get just the filename
-                transcription = groq_client.audio.transcriptions.create(
-                    file=(filename, file.read()),
-                    model="whisper-large-v3",
-                    response_format="verbose_json",
-                    language="en",
-                    temperature=0.0,
-                    prompt="This is a audio recording. Please transcribe accurately with proper punctuation.",
-                )
+        print(f"🎙️ Starting AWS Transcribe job: {job_name}")
+        start_transcription_job(event.bucket, event.key, job_name)
+        notify_ios_app("🎙️ Transcribing audio (AWS Transcribe)...")
 
-            message = f"File: {filename}. Transcribed audio to raw text."
-            print(message)
-            notify_ios_app(message)
+        print("⏳ Waiting for transcription to complete...")
+        raw_transcript = wait_for_transcription(job_name)
+        print(f"✅ Transcription complete: {len(raw_transcript)} characters")
 
-            formatted_text = generate_formatted_transcription(transcription.text)
-            title = generate_title(formatted_text)
-            date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        notify_ios_app("🤖 Formatting transcript with AI...")
+        formatted_text = generate_formatted_transcription(raw_transcript)
 
-            output_filename = f"{date_str}_{title}.txt"
+        notify_ios_app("📝 Generating summary with key points...")
+        summary = generate_summary(text=formatted_text, filename=filename)
 
-            print(f"📝 Formatted transcription: {formatted_text[:50]}...")
+        notify_ios_app("✍️ Generating title...")
+        title = generate_title(formatted_text, filename=filename)
 
-            output_key = f"transcriptions/{output_filename}"
+        date_str = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        output_filename = f"{date_str}_{filename}.txt"
+        output_key = f"transcriptions/{output_filename}"
 
-            # Save formatted transcription back to S3.
-            s3.put_object(
-                Bucket=event.bucket,
-                Key=output_key,
-                Body=formatted_text,
-                ContentType="text/plain",
-            )
-            print(f"💾 Saved transcription to: {output_key}")
+        full_content = f"{summary}\n\n---\n\n# Full Transcript\n\n{formatted_text}"
 
-            message = f"File: {output_filename}. Transcription ready. Visit in s3://{event.bucket}/{output_key}"
-            notify_ios_app(message)
+        s3.put_object(
+            Bucket=event.bucket,
+            Key=output_key,
+            Body=full_content,
+            ContentType="text/plain",
+        )
+        print(f"💾 Saved to S3: {output_key}")
 
-        print("🎉 Audio processing complete!")
+        add_transcript_to_notion(doc_name=title, transcript_text=full_content)
+
+        notify_ios_app(f"✅ Complete: '{title}'")
+        print(f"🎉 Transcription complete: {output_filename}")
 
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
+        error_msg = f"❌ Transcription failed: {str(e)}"
+        print(error_msg)
+        notify_ios_app(error_msg)
         raise

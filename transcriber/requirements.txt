@@ -1,2 +1,2 @@
-groq
 google-genai
+notion-client
