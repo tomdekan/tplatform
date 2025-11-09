@@ -23,6 +23,27 @@ def notify_ios_app(message: str) -> None:
         print(f"Failed to notify iOS app: {notify_err}")
 
 
+def chunk_text(text: str, max_length: int = 2000) -> list[str]:
+    """Split text into chunks that fit within Notion's character limit"""
+    if len(text) <= max_length:
+        return [text]
+
+    chunks = []
+    while text:
+        if len(text) <= max_length:
+            chunks.append(text)
+            break
+
+        split_at = text.rfind(" ", 0, max_length)
+        if split_at == -1:
+            split_at = max_length
+
+        chunks.append(text[:split_at])
+        text = text[split_at:].lstrip()
+
+    return chunks
+
+
 def add_transcript_to_notion(doc_name: str, transcript_text: str) -> None:
     """Add transcript to Notion database as a new page"""
     try:
@@ -39,17 +60,19 @@ def add_transcript_to_notion(doc_name: str, transcript_text: str) -> None:
 
         for paragraph in paragraphs:
             if paragraph.strip():
-                children_blocks.append(
-                    {
-                        "object": "block",
-                        "type": "paragraph",
-                        "paragraph": {
-                            "rich_text": [
-                                {"type": "text", "text": {"content": paragraph.strip()}}
-                            ]
-                        },
-                    }
-                )
+                chunks = chunk_text(paragraph.strip(), max_length=1900)
+                for chunk in chunks:
+                    children_blocks.append(
+                        {
+                            "object": "block",
+                            "type": "paragraph",
+                            "paragraph": {
+                                "rich_text": [
+                                    {"type": "text", "text": {"content": chunk}}
+                                ]
+                            },
+                        }
+                    )
 
         notion.pages.create(
             parent={"database_id": database_id},
@@ -168,7 +191,11 @@ Format as clear markdown with:
 - ## Key Points (bullet list)
 - ## Supporting Quotes (grouped by topic)
 
-<transcription>{text}</transcription>"""
+<transcription>{text}</transcription>
+
+Reply immediadately, with no introduction or explanation.
+
+"""
                 )
             ],
         ),
